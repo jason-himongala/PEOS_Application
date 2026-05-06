@@ -1,25 +1,19 @@
 @echo off
 title PEOS Monitoring System
 
+cd /d "%~dp0"
+
 echo ============================================
-echo PEOS Monitoring System - Multi-Service Start
+echo PEOS Monitoring System - Full Start
 echo ============================================
 echo.
 
-echo Starting Backend Server (Port 3001)...
-start cmd /k "cd backend && npm run dev"
-
-timeout /t 3 /nobreak
-
-echo Starting Frontend & Tailwind (Port 5000)...
-start cmd /k "npm run dev"
+echo Starting all services using the standard launcher...
+call run.bat
 
 echo.
 echo ============================================
-echo Services started in new windows:
-echo - Backend API: http://localhost:3001
-echo - Frontend UI: http://localhost:5000
+echo Launcher completed.
 echo ============================================
 echo.
-echo Press CTRL+C in each window to stop services
-pause
+exit /b 0

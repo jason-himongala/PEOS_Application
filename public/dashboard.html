@@ -3421,9 +3421,7 @@
             id="participantViewToolsPanel"
             class="participant-tools-panel mb-6 hidden p-4"
           >
-            <div
-              class="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]"
-            >
+            <div class="grid gap-4">
               <div>
                 <label
                   for="participantNameSearch"
@@ -3442,16 +3440,16 @@
                     <circle cx="11" cy="11" r="7"></circle>
                     <path d="M20 20l-3.5-3.5"></path>
                   </svg>
-                  Search Participant Name
+                  Search Participant Name or No
                 </label>
                 <input
                   id="participantNameSearch"
                   type="text"
-                  placeholder="Type a participant name to filter the table..."
+                  placeholder="Type a participant name or NO to filter the table..."
                   class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 shadow-sm transition duration-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
                 />
                 <p class="mt-2 text-xs text-slate-500">
-                  Matches the NAME column in the attendance sheet.
+                  Matches the NO or NAME columns in the attendance sheet.
                 </p>
               </div>
               <div class="participant-upload-card border border-slate-200 p-4">
@@ -3818,10 +3816,14 @@
 
         const normalizedFilter = filterValue.trim().toLowerCase();
         tbody.querySelectorAll("tr").forEach((row) => {
+          const noCell = row.querySelector("td:first-child");
           const nameInput = row.querySelector("td:nth-child(2) input");
+          const participantNo = (noCell?.textContent || "").trim().toLowerCase();
           const participantName = (nameInput?.value || "").trim().toLowerCase();
           const isMatch =
-            !normalizedFilter || participantName.includes(normalizedFilter);
+            !normalizedFilter ||
+            participantName.includes(normalizedFilter) ||
+            participantNo.includes(normalizedFilter);
           row.style.display = isMatch ? "" : "none";
         });
       }
@@ -3854,17 +3856,8 @@
           return API_URL.replace(/\/api\/?$/, "");
         }
 
-        if (
-          window.location.hostname === "localhost" ||
-          window.location.hostname === "127.0.0.1"
-        ) {
-          return `${window.location.protocol}//${window.location.hostname}:3002`;
-        }
-
-        const host = window.location.hostname;
-        const protocol = window.location.protocol;
         if (window.location.port === "3000") {
-          return `${protocol}//${host}:3002`;
+          return `${window.location.protocol}//${window.location.hostname}:3002`;
         }
 
         return window.location.origin;

@@ -1,38 +1,30 @@
 # PEOS Backend API
 
-Production-ready Node.js + Express + MySQL backend for the PEOS Monitoring System.
+Production-ready Node.js + Express + SQLite backend for the PEOS Monitoring System.
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- **XAMPP** installed and running (MySQL service enabled)
 - **Node.js** 14+ installed
 
-### 1. Start XAMPP
-
-Open XAMPP Control Panel and start the MySQL service.
-
-### 2. Install Dependencies
+### 1. Install Dependencies
 
 ```bash
 cd backend
 npm install
 ```
 
-### 3. Configure Database (Optional)
+### 2. Configure Database Location (Optional)
 
-Edit `backend/.env` if your MySQL settings differ:
+The backend uses a local SQLite file by default. You can override the path in `backend/.env`:
 
 ```env
-DB_HOST=127.0.0.1
-DB_USER=root
-DB_PASSWORD=
-DB_NAME=peos_db
-PORT=3001
+DATABASE_PATH=./peos.db
+PORT=3002
 ```
 
-### 4. Start the Server
+### 3. Start the Server
 
 **Development (with hot reload):**
 
@@ -46,14 +38,12 @@ npm run dev
 npm start
 ```
 
-The server will run on `http://localhost:3001`
+The server will run on `http://localhost:3002`
 
 ## 📊 Database
 
-- **Type**: MySQL (XAMPP)
-- **Host**: localhost (127.0.0.1)
-- **User**: root (default, no password)
-- **Database**: peos_db (auto-created on first run)
+- **Type**: SQLite
+- **File**: `backend/peos.db` (auto-created on first run)
 - **Auto-creates tables** on first run
 
 ### Tables
@@ -118,7 +108,7 @@ Update your frontend to use the API instead of localStorage. Replace localStorag
 
 ## 📝 Notes
 
-- Database file (`peos.db`) is auto-created
+- Database file (`peos.db`) is auto-created and persists between launches
 - Add more endpoints as needed
 - Use transactions for batch operations in production
 - Consider adding authentication middleware

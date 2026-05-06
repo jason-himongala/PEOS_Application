@@ -1,211 +1,278 @@
-const mysql = require("mysql2/promise");
+const fs = require("fs");
 const path = require("path");
+const sqlite3 = require("sqlite3").verbose();
 
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
-// MySQL connection pool
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || "127.0.0.1",
-  user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "",
-  database: process.env.DB_NAME || "peos_db",
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
+const DATABASE_PATH =
+  process.env.DATABASE_PATH || path.join(__dirname, "peos.db");
+
+fs.mkdirSync(path.dirname(DATABASE_PATH), { recursive: true });
+
+const sqliteDb = new sqlite3.Database(DATABASE_PATH);
+
+sqliteDb.serialize(() => {
+  sqliteDb.run("PRAGMA foreign_keys = ON");
 });
 
-// Initialize database tables
+function exec(sql) {
+  return new Promise((resolve, reject) => {
+    sqliteDb.exec(sql, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+}
+
+function run(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    sqliteDb.run(sql, params, function onRun(error) {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve({
+        affectedRows: this.changes || 0,
+        insertId: this.lastID,
+      });
+    });
+  });
+}
+
+function all(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    sqliteDb.all(sql, params, (error, rows) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(rows || []);
+    });
+  });
+}
+
+function isSelectQuery(sql) {
+  return /^\s*(SELECT|WITH|EXPLAIN|VALUES)\b/i.test(sql);
+}
+
+const pool = {
+  async getConnection() {
+    return {
+      async query(sql, params = []) {
+        if (isSelectQuery(sql)) {
+          return [await all(sql, params), []];
+        }
+
+        if (/^\s*PRAGMA\b/i.test(sql)) {
+          if (sql.includes("=")) {
+            await exec(sql);
+            return [{ affectedRows: 0, insertId: undefined }, []];
+          }
+
+          return [await all(sql, params), []];
+        }
+
+        const trimmedSql = sql.trim();
+        if (/^(BEGIN|COMMIT|ROLLBACK)\b/i.test(trimmedSql)) {
+          await exec(trimmedSql);
+          return [{ affectedRows: 0, insertId: undefined }, []];
+        }
+
+        return [await run(sql, params), []];
+      },
+      release() {},
+    };
+  },
+};
+
+async function ensureColumn(
+  connection,
+  tableName,
+  columnName,
+  columnDefinition,
+) {
+  const [columns] = await connection.query(`PRAGMA table_info(${tableName})`);
+  const hasColumn = columns.some((column) => column.name === columnName);
+
+  if (!hasColumn) {
+    await connection.query(
+      `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`,
+    );
+  }
+}
+
 async function initializeDatabase() {
   let connection;
+
   try {
     connection = await pool.getConnection();
 
-    // Best-effort helper for backward-compatible schema migrations.
-    const execIgnore = async (sql) => {
-      try {
-        await connection.query(sql);
-      } catch (e) {
-        // Ignore migration errors to keep startup resilient across MySQL/MariaDB versions.
-      }
-    };
+    await connection.query("PRAGMA foreign_keys = ON");
 
-    // Create database if not exists
-    await connection.query(
-      `CREATE DATABASE IF NOT EXISTS ${process.env.DB_NAME || "peos_db"}`,
-    );
-
-    // Select the database
-    await connection.query(`USE ${process.env.DB_NAME || "peos_db"}`);
-
-    // Set default storage engine to InnoDB
-    await connection.query(`SET default_storage_engine=InnoDB`);
-
-    // Users table
     await connection.query(`
       CREATE TABLE IF NOT EXISTS users (
-        id VARCHAR(36) PRIMARY KEY,
-        username VARCHAR(255) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        role VARCHAR(50) DEFAULT 'user',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        role TEXT DEFAULT 'user',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
     `);
 
-    // Activities table
     await connection.query(`
       CREATE TABLE IF NOT EXISTS activities (
-        id VARCHAR(36) PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        venue VARCHAR(255) NOT NULL,
-        date VARCHAR(50) NOT NULL,
-        source VARCHAR(50) DEFAULT 'saved',
-        created_by VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        venue TEXT NOT NULL,
+        date TEXT NOT NULL,
+        source TEXT DEFAULT 'saved',
+        created_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
     `);
 
-    // Ensure expected columns exist for older databases.
-    await execIgnore(
-      `ALTER TABLE activities ADD COLUMN source VARCHAR(50) DEFAULT 'saved'`,
+    await ensureColumn(
+      connection,
+      "activities",
+      "source",
+      "TEXT DEFAULT 'saved'",
     );
-    await execIgnore(
-      `ALTER TABLE activities ADD COLUMN created_by VARCHAR(255)`,
-    );
-    await execIgnore(
-      `ALTER TABLE activities ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+    await ensureColumn(connection, "activities", "created_by", "TEXT");
+    await ensureColumn(
+      connection,
+      "activities",
+      "created_at",
+      "DATETIME DEFAULT CURRENT_TIMESTAMP",
     );
 
-    // Attendance records table
     await connection.query(`
       CREATE TABLE IF NOT EXISTS attendance (
-        id VARCHAR(36) PRIMARY KEY,
-        activity_id VARCHAR(36) NOT NULL,
-        row_number INT NOT NULL,
-        name VARCHAR(255),
-        sex VARCHAR(50),
-        office VARCHAR(255),
-        position VARCHAR(255),
-        contact VARCHAR(20),
-        signature VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_activity_id (activity_id)
-      ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        id TEXT PRIMARY KEY,
+        activity_id TEXT NOT NULL,
+        row_number INTEGER NOT NULL,
+        name TEXT,
+        sex TEXT,
+        office TEXT,
+        position TEXT,
+        contact TEXT,
+        signature TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE
+      )
     `);
 
-    await execIgnore(
-      `ALTER TABLE attendance ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+    await ensureColumn(
+      connection,
+      "attendance",
+      "created_at",
+      "DATETIME DEFAULT CURRENT_TIMESTAMP",
     );
-    await execIgnore(
-      `ALTER TABLE attendance ADD INDEX idx_activity_id (activity_id)`,
+    await exec(
+      "CREATE INDEX IF NOT EXISTS idx_activity_id ON attendance (activity_id)",
     );
 
-    // Uploaded files table
     await connection.query(`
       CREATE TABLE IF NOT EXISTS files (
-        id VARCHAR(36) PRIMARY KEY,
-        participant_id VARCHAR(36),
-        activity_id VARCHAR(36) NOT NULL,
-        uploaded_by VARCHAR(36) NOT NULL,
-        file_name VARCHAR(255) NOT NULL,
-        file_path VARCHAR(1024) NOT NULL,
-        upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_files_activity_id (activity_id),
-        INDEX idx_files_uploaded_by (uploaded_by)
-      ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        id TEXT PRIMARY KEY,
+        participant_id TEXT,
+        activity_id TEXT NOT NULL,
+        uploaded_by TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        upload_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (participant_id) REFERENCES attendance(id) ON DELETE SET NULL,
+        FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE,
+        FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE CASCADE
+      )
     `);
 
-    // UploadedFile table (primary files storage for uploads)
+    await ensureColumn(connection, "files", "participant_id", "TEXT");
+    await ensureColumn(connection, "files", "activity_id", "TEXT");
+    await ensureColumn(connection, "files", "uploaded_by", "TEXT");
+    await ensureColumn(connection, "files", "file_name", "TEXT");
+    await ensureColumn(connection, "files", "file_path", "TEXT");
+    await ensureColumn(
+      connection,
+      "files",
+      "upload_date",
+      "DATETIME DEFAULT CURRENT_TIMESTAMP",
+    );
+    await exec(
+      "CREATE INDEX IF NOT EXISTS idx_files_activity_id ON files (activity_id)",
+    );
+    await exec(
+      "CREATE INDEX IF NOT EXISTS idx_files_uploaded_by ON files (uploaded_by)",
+    );
+    await exec(
+      "CREATE INDEX IF NOT EXISTS idx_files_upload_date ON files (upload_date)",
+    );
+
     await connection.query(`
       CREATE TABLE IF NOT EXISTS UploadedFile (
-        id VARCHAR(36) PRIMARY KEY,
-        participant_id VARCHAR(36),
-        activity_id VARCHAR(36) NOT NULL,
-        uploaded_by VARCHAR(36),
-        file_name VARCHAR(255) NOT NULL,
-        file_path VARCHAR(1024) NOT NULL,
-        file_size BIGINT,
-        upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_uploadedfile_activity_id (activity_id),
-        INDEX idx_uploadedfile_uploaded_by (uploaded_by),
-        INDEX idx_uploadedfile_upload_date (upload_date)
-      ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        id TEXT PRIMARY KEY,
+        participant_id TEXT,
+        activity_id TEXT NOT NULL,
+        uploaded_by TEXT,
+        file_name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        file_size INTEGER,
+        upload_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (participant_id) REFERENCES attendance(id) ON DELETE SET NULL,
+        FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE,
+        FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL
+      )
     `);
 
-    await execIgnore(`ALTER TABLE files ADD COLUMN participant_id VARCHAR(36)`);
-    await execIgnore(
-      `ALTER TABLE files ADD COLUMN activity_id VARCHAR(36) NOT NULL`,
+    await ensureColumn(connection, "UploadedFile", "participant_id", "TEXT");
+    await ensureColumn(connection, "UploadedFile", "activity_id", "TEXT");
+    await ensureColumn(connection, "UploadedFile", "uploaded_by", "TEXT");
+    await ensureColumn(connection, "UploadedFile", "file_name", "TEXT");
+    await ensureColumn(connection, "UploadedFile", "file_path", "TEXT");
+    await ensureColumn(connection, "UploadedFile", "file_size", "INTEGER");
+    await ensureColumn(
+      connection,
+      "UploadedFile",
+      "upload_date",
+      "DATETIME DEFAULT CURRENT_TIMESTAMP",
     );
-    await execIgnore(
-      `ALTER TABLE files ADD COLUMN uploaded_by VARCHAR(36) NOT NULL`,
+    await exec(
+      "CREATE INDEX IF NOT EXISTS idx_uploadedfile_activity_id ON UploadedFile (activity_id)",
     );
-    await execIgnore(
-      `ALTER TABLE files ADD COLUMN file_name VARCHAR(255) NOT NULL`,
+    await exec(
+      "CREATE INDEX IF NOT EXISTS idx_uploadedfile_uploaded_by ON UploadedFile (uploaded_by)",
     );
-    await execIgnore(
-      `ALTER TABLE files ADD COLUMN file_path VARCHAR(1024) NOT NULL`,
-    );
-    await execIgnore(
-      `ALTER TABLE files ADD COLUMN upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
-    );
-    await execIgnore(
-      `ALTER TABLE files ADD INDEX idx_files_activity_id (activity_id)`,
-    );
-    await execIgnore(
-      `ALTER TABLE files ADD INDEX idx_files_uploaded_by (uploaded_by)`,
+    await exec(
+      "CREATE INDEX IF NOT EXISTS idx_uploadedfile_upload_date ON UploadedFile (upload_date)",
     );
 
-    // Add foreign keys (ignore if they already exist)
-    try {
-      await connection.query(
-        `ALTER TABLE attendance ADD CONSTRAINT fk_attendance_activity_id FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE`,
-      );
-    } catch (e) {
-      // Constraint may already exist
-    }
-
-    try {
-      await connection.query(
-        `ALTER TABLE files ADD CONSTRAINT fk_files_participant_id FOREIGN KEY (participant_id) REFERENCES attendance(id) ON DELETE SET NULL`,
-      );
-    } catch (e) {
-      // Constraint may already exist
-    }
-
-    try {
-      await connection.query(
-        `ALTER TABLE files ADD CONSTRAINT fk_files_activity_id FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE`,
-      );
-    } catch (e) {
-      // Constraint may already exist
-    }
-
-    try {
-      await connection.query(
-        `ALTER TABLE files ADD CONSTRAINT fk_files_uploaded_by FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE CASCADE`,
-      );
-    } catch (e) {
-      // Constraint may already exist
-    }
-
-    // Insert default staff user for attendance submissions (skip if already exists)
     const { v4: uuidv4 } = require("uuid");
-    const staffUserId = uuidv4();
-    try {
+    let staffUserId = null;
+    const existingStaffUser = await all(
+      "SELECT id FROM users WHERE username = ? LIMIT 1",
+      ["staff"],
+    );
+
+    if (existingStaffUser.length > 0) {
+      staffUserId = existingStaffUser[0].id;
+    } else {
+      staffUserId = uuidv4();
       await connection.query(
         `INSERT INTO users (id, username, password, role) VALUES (?, ?, ?, ?)`,
         [staffUserId, "staff", "password", "admin"],
       );
-    } catch (e) {
-      // User may already exist, that's fine
     }
 
-    console.log("✓ MySQL Database initialized successfully");
-    console.log("✓ Database: " + (process.env.DB_NAME || "peos_db"));
-    console.log("✓ Host: " + (process.env.DB_HOST || "127.0.0.1"));
+    console.log("✓ SQLite Database initialized successfully");
+    console.log("✓ Database file: " + DATABASE_PATH);
     console.log("✓ Staff user created with ID:", staffUserId);
   } catch (error) {
     console.error("✗ Database initialization error:", error.message);
-    // Don't exit - let the app try to continue
   } finally {
     if (connection) connection.release();
   }

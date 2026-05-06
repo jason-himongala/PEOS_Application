@@ -3,18 +3,11 @@
 // Development: frontend on 3000, backend on 3002
 // Production/Integrated: backend serves from same origin
 let API_URL;
-if (
-  window.location.hostname === "localhost" &&
-  window.location.port === "3000"
-) {
-  API_URL = "http://localhost:3002/api";
-} else if (
-  window.location.hostname === "192.168.100.131" &&
-  window.location.port === "3000"
-) {
-  API_URL = "http://192.168.100.131:3002/api";
+if (window.location.port === "3000") {
+  // If frontend is served on 3000, backend API is expected on same host at 3002.
+  API_URL = `${window.location.protocol}//${window.location.hostname}:3002/api`;
 } else {
-  // For other cases (same origin serving frontend and backend)
+  // For same-origin serving (frontend and backend from same server)
   API_URL = "/api";
 }
 
