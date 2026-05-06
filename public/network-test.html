@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Network Diagnostic Test</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 900px;
+        margin: 50px auto;
+        padding: 20px;
+        background: #f5f5f5;
+      }
+      .section {
+        background: white;
+        padding: 20px;
+        margin: 10px 0;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        color: #333;
+      }
+      h2 {
+        color: #666;
+        margin-top: 0;
+      }
+      .info-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid #eee;
+      }
+      .label {
+        font-weight: bold;
+        color: #555;
+        min-width: 200px;
+      }
+      .value {
+        color: #333;
+        font-family: monospace;
+      }
+      .status {
+        padding: 10px;
+        border-radius: 4px;
+        margin: 10px 0;
+        font-weight: bold;
+      }
+      .success {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+      .error {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+      .pending {
+        background: #fff3cd;
+        color: #856404;
+        border: 1px solid #ffeaa7;
+      }
+      .test-button {
+        background: #007bff;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        margin: 5px 5px 5px 0;
+      }
+      .test-button:hover {
+        background: #0056b3;
+      }
+      code {
+        background: #f0f0f0;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-family: monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🔧 PEOS Network Diagnostic Test</h1>
+
+    <div class="section">
+      <h2>📍 Your Connection Info</h2>
+      <div class="info-row">
+        <span class="label">Frontend URL:</span>
+        <span class="value" id="frontendUrl">Loading...</span>
+      </div>
+      <div class="info-row">
+        <span class="label">Your Hostname:</span>
+        <span class="value" id="hostname">Loading...</span>
+      </div>
+      <div class="info-row">
+        <span class="label">Your IP (from browser):</span>
+        <span class="value" id="clientIp">Detecting...</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>🔌 API Configuration</h2>
+      <div class="info-row">
+        <span class="label">Expected API Base URL:</span>
+        <span class="value" id="apiUrl">Loading...</span>
+      </div>
+      <div
+        id="apiUrlExplanation"
+        style="color: #666; font-size: 14px; margin-top: 10px"
+      ></div>
+    </div>
+
+    <div class="section">
+      <h2>✅ Connection Tests</h2>
+      <div style="margin: 15px 0">
+        <button class="test-button" onclick="testFrontend()">
+          Test Frontend (3000)
+        </button>
+        <button class="test-button" onclick="testBackend()">
+          Test Backend API (3002)
+        </button>
+        <button class="test-button" onclick="testDatabase()">
+          Test Database Connection
+        </button>
+      </div>
+      <div id="testResults"></div>
+    </div>
+
+    <div class="section">
+      <h2>🐛 Troubleshooting Tips</h2>
+      <ul>
+        <li>
+          <strong>Can't reach the server from another device?</strong>
+          <ul>
+            <li>Check both devices are on the same WiFi network</li>
+            <li>Try: <code>ping 192.168.0.202</code> from the other device</li>
+            <li>
+              Disable Windows Firewall temporarily: Settings → Windows Defender
+              Firewall → Turn off
+            </li>
+          </ul>
+        </li>
+        <li>
+          <strong>Page loads but no data shows?</strong>
+          <ul>
+            <li>Open browser DevTools (F12) → Console tab</li>
+            <li>Check for CORS errors (red messages about blocked requests)</li>
+            <li>
+              API URL should show: <code>http://192.168.0.202:3002/api</code>
+            </li>
+          </ul>
+        </li>
+        <li>
+          <strong>Backend returns error?</strong>
+          <ul>
+            <li>Ensure MySQL is running in XAMPP</li>
+            <li>Check backend terminal for error messages</li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+
+    <script>
+      // Load or inject API client logic inline
+      let API_URL;
+      if (window.location.port === "3000") {
+        API_URL = `${window.location.protocol}//${window.location.hostname}:3002/api`;
+      } else {
+        API_URL = "/api";
+      }
+
+      // Display connection info
+      document.getElementById("frontendUrl").textContent = window.location.href;
+      document.getElementById("hostname").textContent =
+        window.location.hostname;
+      document.getElementById("apiUrl").textContent = API_URL;
+
+      const explanation = document.getElementById("apiUrlExplanation");
+      if (window.location.port === "3000") {
+        explanation.innerHTML = `
+                ✓ <strong>Correct:</strong> Frontend on port 3000 → Backend on port 3002<br>
+                This means your browser will call API at <code>${API_URL}</code>
+            `;
+      } else {
+        explanation.innerHTML = `
+                ℹ Frontend on port ${window.location.port || "80"} → Same-origin API<br>
+                This means your browser will call API at <code>${API_URL}</code>
+            `;
+      }
+
+      // Detect client IP from server
+      async function detectClientIp() {
+        try {
+          const response = await fetch(`${API_URL}/client-info`);
+          if (response.ok) {
+            const data = await response.json();
+            document.getElementById("clientIp").textContent =
+              data.ip || "Unable to detect";
+          }
+        } catch (e) {
+          document.getElementById("clientIp").textContent =
+            "Error detecting (backend may be down)";
+        }
+      }
+      detectClientIp();
+
+      // Test functions
+      function addResult(title, status, message) {
+        const results = document.getElementById("testResults");
+        const div = document.createElement("div");
+        div.className = `status ${status}`;
+        div.innerHTML = `<strong>${title}:</strong> ${message}`;
+        results.appendChild(div);
+      }
+
+      async function testFrontend() {
+        addResult("Frontend Test", "pending", "Testing...");
+        try {
+          const response = await fetch(
+            window.location.origin + "/dashboard.html",
+            { method: "HEAD", cache: "no-cache" },
+          );
+          addResult(
+            "Frontend Test",
+            response.ok ? "success" : "error",
+            response.ok
+              ? `✓ Frontend responding (${response.status})`
+              : `✗ Frontend returned ${response.status}`,
+          );
+        } catch (e) {
+          addResult(
+            "Frontend Test",
+            "error",
+            `✗ Frontend unreachable: ${e.message}`,
+          );
+        }
+      }
+
+      async function testBackend() {
+        addResult("Backend Test", "pending", "Testing...");
+        try {
+          const response = await fetch(`${API_URL}/activities`, {
+            cache: "no-cache",
+          });
+          const status = response.ok ? "success" : "error";
+          const msg = response.ok
+            ? `✓ Backend API responding (${response.status})`
+            : `✗ Backend returned ${response.status}`;
+          addResult("Backend Test", status, msg);
+        } catch (e) {
+          addResult(
+            "Backend Test",
+            "error",
+            `✗ Backend unreachable: ${e.message}`,
+          );
+        }
+      }
+
+      async function testDatabase() {
+        addResult("Database Test", "pending", "Testing...");
+        try {
+          const response = await fetch(`${API_URL}/attendance/summary`, {
+            cache: "no-cache",
+          });
+          if (response.ok) {
+            const data = await response.json();
+            addResult(
+              "Database Test",
+              "success",
+              `✓ Database connected (${data.length || 0} activities found)`,
+            );
+          } else {
+            addResult(
+              "Database Test",
+              "error",
+              `✗ Database returned ${response.status}`,
+            );
+          }
+        } catch (e) {
+          addResult(
+            "Database Test",
+            "error",
+            `✗ Database unreachable: ${e.message}`,
+          );
+        }
+      }
+    </script>
+  </body>
+</html>

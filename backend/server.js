@@ -13,6 +13,39 @@ const app = express();
 // Backend should run on a dedicated API port (3001) when static frontend uses 3000
 const PORT = process.env.PORT || 3002;
 
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+
+  try {
+    const parsed = new URL(origin);
+    const host = parsed.hostname;
+    const port = parsed.port;
+
+    if (!port || (port !== "3000" && port !== "3002")) {
+      return false;
+    }
+
+    if (host === "localhost" || host === "127.0.0.1") {
+      return true;
+    }
+
+    // Allow private-network clients (common LAN ranges)
+    if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) {
+      return true;
+    }
+    if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) {
+      return true;
+    }
+    if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(host)) {
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    return false;
+  }
+}
+
 // Initialize database on startup
 (async () => {
   try {
@@ -27,18 +60,10 @@ const PORT = process.env.PORT || 3002;
 app.use(
   cors({
     origin: function (origin, callback) {
-      const allowedOrigins = [
-        "http://localhost:3000",
-        "http://localhost:3002",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3002",
-        "http://192.168.100.131:3000",
-        "http://192.168.100.131:3002",
-      ];
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (isAllowedOrigin(origin)) {
         callback(null, true);
       } else {
-        callback(new Error("CORS policy: Origin not allowed"));
+        callback(new Error(`CORS policy: Origin not allowed (${origin})`));
       }
     },
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -78,6 +103,45 @@ const storage = multer.diskStorage({
 });
 
 const uploadMiddleware = multer({ storage });
+
+// ============================================
+// DIAGNOSTICS ENDPOINTS
+// ============================================
+
+// Client info endpoint for network diagnostics
+app.get("/api/client-info", (req, res) => {
+  const clientIp = req.ip || req.connection.remoteAddress || "unknown";
+  const origin = req.get("origin") || req.get("referer") || "unknown";
+  res.json({
+    ip: clientIp,
+    origin: origin,
+    hostname: req.hostname,
+    method: req.method,
+    protocol: req.protocol,
+    userAgent: req.get("user-agent"),
+  });
+});
+
+// Health check endpoint
+app.get("/api/health", async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    const [result] = await connection.query("SELECT 1");
+    connection.release();
+    res.json({
+      status: "healthy",
+      database: "connected",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: "unhealthy",
+      database: "disconnected",
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
 
 // ============================================
 // ACTIVITIES ENDPOINTS
@@ -164,6 +228,18 @@ app.delete("/api/activities/:id", async (req, res) => {
   try {
     const connection = await pool.getConnection();
 
+    // Remove dependent records first. This avoids FK errors in older schemas
+    // where ON DELETE CASCADE may not be present on attendance/files tables.
+    await connection.query("DELETE FROM attendance WHERE activity_id = ?", [
+      req.params.id,
+    ]);
+    await connection.query("DELETE FROM UploadedFile WHERE activity_id = ?", [
+      req.params.id,
+    ]);
+    await connection.query("DELETE FROM files WHERE activity_id = ?", [
+      req.params.id,
+    ]);
+
     const [result] = await connection.query(
       "DELETE FROM activities WHERE id = ?",
       [req.params.id],
@@ -173,11 +249,6 @@ app.delete("/api/activities/:id", async (req, res) => {
       connection.release();
       return res.status(404).json({ error: "Activity not found" });
     }
-
-    // Also delete associated attendance records
-    await connection.query("DELETE FROM attendance WHERE activity_id = ?", [
-      req.params.id,
-    ]);
 
     connection.release();
     res.json({ message: "Activity deleted successfully" });
@@ -698,7 +769,15 @@ app.get("/api/files", async (req, res) => {
     const connection = await pool.getConnection();
 
     const [rows] = await connection.query(
-      `SELECT f.id, f.participant_id, f.activity_id, f.uploaded_by, f.file_name, f.file_path, f.upload_date, a.name AS activity_name FROM files f LEFT JOIN activities a ON f.activity_id = a.id ORDER BY f.upload_date DESC`,
+      `SELECT f.id, f.participant_id, f.activity_id, f.uploaded_by, f.file_name, f.file_path, f.upload_date, a.name AS activity_name
+       FROM UploadedFile f
+       LEFT JOIN activities a ON f.activity_id = a.id
+       UNION ALL
+       SELECT f.id, f.participant_id, f.activity_id, f.uploaded_by, f.file_name, f.file_path, f.upload_date, a.name AS activity_name
+       FROM files f
+       LEFT JOIN activities a ON f.activity_id = a.id
+       WHERE NOT EXISTS (SELECT 1 FROM UploadedFile uf WHERE uf.id = f.id)
+       ORDER BY upload_date DESC`,
     );
 
     connection.release();
@@ -726,8 +805,18 @@ app.get("/api/files/activity/:activity_id", async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.query(
-      `SELECT * FROM UploadedFile WHERE activity_id = ? ORDER BY upload_date DESC`,
-      [req.params.activity_id],
+      `SELECT * FROM (
+         SELECT id, participant_id, activity_id, uploaded_by, file_name, file_path, file_size, upload_date
+         FROM UploadedFile
+         WHERE activity_id = ?
+         UNION ALL
+         SELECT id, participant_id, activity_id, uploaded_by, file_name, file_path, NULL AS file_size, upload_date
+         FROM files
+         WHERE activity_id = ?
+           AND NOT EXISTS (SELECT 1 FROM UploadedFile uf WHERE uf.id = files.id)
+       )
+       ORDER BY upload_date DESC`,
+      [req.params.activity_id, req.params.activity_id],
     );
     connection.release();
     res.json(rows || []);
@@ -745,19 +834,26 @@ app.delete("/api/files/:id", async (req, res) => {
       "SELECT * FROM UploadedFile WHERE id = ?",
       [fileId],
     );
-    if (!rows || rows.length === 0) {
+    const [legacyRows] =
+      !rows || rows.length === 0
+        ? await connection.query("SELECT * FROM files WHERE id = ?", [fileId])
+        : [[]];
+
+    const fileRecord = rows?.[0] || legacyRows?.[0];
+    if (!fileRecord) {
       connection.release();
       return res.status(404).json({ error: "File not found" });
     }
-    const fileRecord = rows[0];
+
     const filePath = path.join(
       __dirname,
       "..",
       fileRecord.file_path.replace(/^\//, ""),
     );
 
-    // Delete DB record
+    // Delete DB record(s) from both tables to keep legacy data consistent.
     await connection.query("DELETE FROM UploadedFile WHERE id = ?", [fileId]);
+    await connection.query("DELETE FROM files WHERE id = ?", [fileId]);
     connection.release();
 
     // Try to remove file from disk if exists
@@ -778,14 +874,6 @@ app.delete("/api/files/:id", async (req, res) => {
     console.error("[FILES] Delete error:", error.message);
     res.status(500).json({ error: error.message });
   }
-});
-
-// ============================================
-// HEALTH CHECK
-// ============================================
-
-app.get("/api/health", (req, res) => {
-  res.json({ status: "OK", message: "PEOS Backend is running" });
 });
 
 // Test endpoint to check uploads directory
@@ -860,7 +948,7 @@ app.use(
 
 app.listen(PORT, () => {
   console.log(`\n✓ PEOS Backend Server running on http://localhost:${PORT}`);
-  console.log(`✓ Database: MySQL (XAMPP)`);
+  console.log(`✓ Database: SQLite (embedded file)`);
   console.log(`✓ Endpoints ready:\n`);
   console.log("  GET  /api/activities         - Get all activities");
   console.log("  POST /api/activities         - Create activity");

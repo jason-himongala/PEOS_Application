@@ -1,0 +1,7 @@
+node_modules/
+dist/
+release/
+uploads/
+
+npm-debug.log*
+*.log

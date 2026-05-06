@@ -4,10 +4,13 @@ const { pool } = require("./database");
   let conn;
   try {
     conn = await pool.getConnection();
-    const [rows] = await conn.query("SHOW TABLES LIKE 'files'");
+    const [rows] = await conn.query(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ["files"],
+    );
     if (rows && rows.length) {
       console.log("✓ Found table `files`");
-      const [cols] = await conn.query("DESCRIBE files");
+      const [cols] = await conn.query("PRAGMA table_info(files)");
       console.table(cols);
     } else {
       console.warn("✗ Table `files` not found in database");
