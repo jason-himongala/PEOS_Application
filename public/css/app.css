@@ -1394,10 +1394,6 @@ video {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .lg\:grid-cols-\[minmax\(0\2c 1\.3fr\)_minmax\(320px\2c 0\.9fr\)\] {
-    grid-template-columns: minmax(0,1.3fr) minmax(320px,0.9fr);
-  }
-
   .lg\:p-6 {
     padding: 1.5rem;
   }
