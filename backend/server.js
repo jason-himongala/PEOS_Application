@@ -104,6 +104,9 @@ const storage = multer.diskStorage({
 
 const uploadMiddleware = multer({ storage });
 
+// Prevent overlapping batch saves for the same activity.
+const activeBatchSubmissions = new Set();
+
 // ============================================
 // DIAGNOSTICS ENDPOINTS
 // ============================================
@@ -267,14 +270,13 @@ app.get("/api/attendance/summary", async (req, res) => {
   try {
     const connection = await pool.getConnection();
 
-    // Get count of attendance records per activity
+    // Count unique participant rows to avoid inflated totals from duplicates.
     const [attStats] = await connection.query(
-      `SELECT activity_id, COUNT(*) as att_count, MAX(created_at) as latest_att FROM attendance GROUP BY activity_id`,
-    );
-
-    // Get count of files per activity
-    const [fileStats] = await connection.query(
-      `SELECT activity_id, COUNT(*) as file_count, MAX(upload_date) as latest_file FROM files GROUP BY activity_id`,
+      `SELECT activity_id,
+              COUNT(DISTINCT CASE WHEN TRIM(COALESCE(name, '')) <> '' THEN row_number END) as att_count,
+              MAX(created_at) as latest_att
+       FROM attendance
+       GROUP BY activity_id`,
     );
 
     // Get all activities
@@ -289,23 +291,17 @@ app.get("/api/attendance/summary", async (req, res) => {
       const attStat = attStats.find(
         (a) => a.activity_id === activity.activity_id,
       );
-      const fileStat = fileStats.find(
-        (f) => f.activity_id === activity.activity_id,
-      );
 
       const attCount = attStat?.att_count || 0;
-      const fileCount = fileStat?.file_count || 0;
-      const totalCount = Math.max(attCount, fileCount); // Use the larger count
-
-      const hasSubmission = attCount > 0 || fileCount > 0;
-      const lastSaved = attStat?.latest_att || fileStat?.latest_file;
+      const hasSubmission = attCount > 0;
+      const lastSaved = attStat?.latest_att || null;
 
       return {
         activity_id: activity.activity_id,
         name: activity.name,
         venue: activity.venue,
         date: activity.date,
-        record_count: totalCount,
+        record_count: attCount,
         last_saved: lastSaved,
         status: hasSubmission ? "Submitted" : "Not Yet Submitted",
         date_submitted: lastSaved,
@@ -493,6 +489,7 @@ function generateAttendanceCSV(activityName, records) {
 app.post("/api/attendance/batch/:activity_id", async (req, res) => {
   const activityId = req.params.activity_id;
   const { records, uploaded_by } = req.body;
+  const submissionKey = `${activityId}`;
 
   console.log("[BATCH] Backend received attendance submission:", {
     activityId,
@@ -512,164 +509,198 @@ app.post("/api/attendance/batch/:activity_id", async (req, res) => {
     });
   }
 
+  if (activeBatchSubmissions.has(submissionKey)) {
+    return res.status(409).json({
+      error:
+        "A submission for this activity is already in progress. Please wait.",
+    });
+  }
+
+  activeBatchSubmissions.add(submissionKey);
+
   try {
     const connection = await pool.getConnection();
+    let transactionStarted = false;
 
-    // Get activity name for CSV header
-    const [activities] = await connection.query(
-      "SELECT name FROM activities WHERE id = ?",
-      [activityId],
-    );
-    const activityName =
-      activities.length > 0 ? activities[0].name : "Activity";
+    try {
+      // Acquire a write lock immediately to avoid delete/insert interleaving.
+      await connection.query("BEGIN IMMEDIATE TRANSACTION");
+      transactionStarted = true;
 
-    // Get staff user ID from database
-    const [users] = await connection.query(
-      "SELECT id FROM users WHERE username = ?",
-      ["staff"],
-    );
-    if (users.length === 0) {
-      connection.release();
-      console.error("[BATCH] Staff user not found");
-      return res
-        .status(500)
-        .json({ error: "Staff user not found in database" });
-    }
-    const staffUserId = users[0].id;
-
-    // Delete existing records for this activity FIRST
-    console.log(
-      "[BATCH] ==> Deleting existing attendance records for activity:",
-      activityId,
-    );
-    const deleteResult = await connection.query(
-      "DELETE FROM attendance WHERE activity_id = ?",
-      [activityId],
-    );
-    console.log("[BATCH] ==> DELETE result:", deleteResult[0]);
-    console.log("[BATCH] ==> Rows deleted:", deleteResult[0].affectedRows);
-
-    // Insert new records (only non-empty ones with better validation)
-    const validRecords = records.filter((r) => {
-      const name = (r.name || "").trim();
-      const sex = (r.sex || "").trim();
-      const office = (r.office || "").trim();
-      const position = (r.position || "").trim();
-      const contact = (r.contact || "").trim();
-      const signature = (r.signature || "").trim();
-
-      const hasData = !!(
-        name ||
-        sex ||
-        office ||
-        position ||
-        contact ||
-        signature
+      // Get activity name for CSV header
+      const [activities] = await connection.query(
+        "SELECT name FROM activities WHERE id = ?",
+        [activityId],
       );
-      if (!hasData) {
-        console.log(`[BATCH] Filtering out empty row ${r.row_number}`);
+      const activityName =
+        activities.length > 0 ? activities[0].name : "Activity";
+
+      // Get staff user ID from database
+      const [users] = await connection.query(
+        "SELECT id FROM users WHERE username = ?",
+        ["staff"],
+      );
+      if (users.length === 0) {
+        throw new Error("Staff user not found in database");
       }
-      return hasData;
-    });
+      const staffUserId = users[0].id;
 
-    console.log(
-      "[BATCH] Received",
-      records.length,
-      "records, attempting to insert",
-      validRecords.length,
-      "valid records",
-    );
-    console.log(
-      "[BATCH] Records to insert:",
-      JSON.stringify(validRecords, null, 2),
-    );
+      // Delete existing records for this activity FIRST
+      console.log(
+        "[BATCH] ==> Deleting existing attendance records for activity:",
+        activityId,
+      );
+      const deleteResult = await connection.query(
+        "DELETE FROM attendance WHERE activity_id = ?",
+        [activityId],
+      );
+      console.log("[BATCH] ==> DELETE result:", deleteResult[0]);
+      console.log("[BATCH] ==> Rows deleted:", deleteResult[0].affectedRows);
 
-    let insertedCount = 0;
-    for (const record of validRecords) {
-      const name = (record.name || "").trim() || null;
-      const sex = (record.sex || "").trim() || null;
-      const office = (record.office || "").trim() || null;
-      const position = (record.position || "").trim() || null;
-      const contact = (record.contact || "").trim() || null;
-      const signature = (record.signature || "").trim() || null;
+      // Keep only one generated summary file record for this activity.
+      await connection.query(
+        "DELETE FROM files WHERE activity_id = ? AND participant_id IS NULL",
+        [activityId],
+      );
 
-      const insertResult = await connection.query(
-        `INSERT INTO attendance (id, activity_id, row_number, name, sex, office, position, contact, signature)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      // De-duplicate by row_number and skip empty rows.
+      const rowMap = new Map();
+      records.forEach((record) => {
+        const rowNumber = Number(record?.row_number);
+        if (!Number.isFinite(rowNumber) || rowNumber < 1) {
+          return;
+        }
+        rowMap.set(rowNumber, record);
+      });
+
+      const validRecords = Array.from(rowMap.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([, r]) => r)
+        .filter((r) => {
+          const name = (r.name || "").trim();
+
+          const hasParticipantName = name !== "";
+          if (!hasParticipantName) {
+            console.log(
+              `[BATCH] Filtering out row ${r.row_number} because name is empty`,
+            );
+          }
+          return hasParticipantName;
+        });
+
+      console.log(
+        "[BATCH] Received",
+        records.length,
+        "records, attempting to insert",
+        validRecords.length,
+        "valid records",
+      );
+      console.log(
+        "[BATCH] Records to insert:",
+        JSON.stringify(validRecords, null, 2),
+      );
+
+      let insertedCount = 0;
+      for (const record of validRecords) {
+        const name = (record.name || "").trim() || null;
+        const sex = (record.sex || "").trim() || null;
+        const office = (record.office || "").trim() || null;
+        const position = (record.position || "").trim() || null;
+        const contact = (record.contact || "").trim() || null;
+        const signature = (record.signature || "").trim() || null;
+
+        await connection.query(
+          `INSERT INTO attendance (id, activity_id, row_number, name, sex, office, position, contact, signature)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            uuidv4(),
+            activityId,
+            record.row_number,
+            name,
+            sex,
+            office,
+            position,
+            contact,
+            signature,
+          ],
+        );
+        insertedCount++;
+        console.log(
+          `[BATCH] ==> Inserted record ${insertedCount}/${validRecords.length}: row_number=${record.row_number}, name=${name}, sex=${sex}`,
+        );
+      }
+
+      console.log(
+        "[BATCH] ==> INSERTION COMPLETE: Total inserted =",
+        insertedCount,
+      );
+
+      // Generate actual CSV file
+      console.log("[BATCH] Generating CSV file from records");
+      const csvContent = generateAttendanceCSV(activityName, validRecords);
+      const now = new Date();
+      const timestamp = now.getTime();
+      const csvFileName = `attendance_${activityId}_${timestamp}.csv`;
+      const csvFilePath = path.join(uploadsDir, csvFileName);
+
+      fs.writeFileSync(csvFilePath, csvContent, "utf-8");
+      console.log("[BATCH] CSV file created:", csvFilePath);
+
+      // Insert database record pointing to the actual CSV file.
+      const fileId = uuidv4();
+      const displayFileName = `Attendance_${activityName}_${now
+        .toISOString()
+        .slice(0, 10)}.csv`;
+      const databaseFilePath = `/uploads/${csvFileName}`;
+
+      console.log("[BATCH] Inserting file record:", {
+        fileName: displayFileName,
+        filePath: databaseFilePath,
+      });
+
+      await connection.query(
+        `INSERT INTO files (id, participant_id, activity_id, uploaded_by, file_name, file_path) VALUES (?, ?, ?, ?, ?, ?)`,
         [
-          uuidv4(),
+          fileId,
+          null,
           activityId,
-          record.row_number,
-          name,
-          sex,
-          office,
-          position,
-          contact,
-          signature,
+          staffUserId,
+          displayFileName,
+          databaseFilePath,
         ],
       );
-      insertedCount++;
-      console.log(
-        `[BATCH] ==> Inserted record ${insertedCount}/${validRecords.length}: row_number=${record.row_number}, name=${name}, sex=${sex}`,
-      );
+
+      await connection.query("COMMIT");
+      transactionStarted = false;
+      connection.release();
+
+      console.log("[BATCH] ✓ SUCCESS: Attendance submission complete");
+      res.status(201).json({
+        message: "Attendance records saved successfully",
+        count: insertedCount,
+        file_id: fileId,
+        file_name: displayFileName,
+        file_path: databaseFilePath,
+      });
+    } catch (error) {
+      if (transactionStarted) {
+        try {
+          await connection.query("ROLLBACK");
+        } catch (rollbackError) {
+          console.error("[BATCH] ROLLBACK failed:", rollbackError.message);
+        }
+      }
+      connection.release();
+      throw error;
     }
-
-    console.log(
-      "[BATCH] ==> INSERTION COMPLETE: Total inserted =",
-      insertedCount,
-    );
-
-    // ✅ CRITICAL FIX: Generate actual CSV file
-    console.log("[BATCH] Generating CSV file from records");
-    const csvContent = generateAttendanceCSV(activityName, records);
-    const now = new Date();
-    const timestamp = now.getTime();
-    const csvFileName = `attendance_${activityId}_${timestamp}.csv`;
-    const csvFilePath = path.join(uploadsDir, csvFileName);
-
-    fs.writeFileSync(csvFilePath, csvContent, "utf-8");
-    console.log("[BATCH] CSV file created:", csvFilePath);
-
-    // Insert database record pointing to the ACTUAL CSV file
-    const fileId = uuidv4();
-    const displayFileName = `Attendance_${activityName}_${now
-      .toISOString()
-      .slice(0, 10)}.csv`;
-    const databaseFilePath = `/uploads/${csvFileName}`;
-
-    console.log("[BATCH] Inserting file record:", {
-      fileName: displayFileName,
-      filePath: databaseFilePath,
-    });
-
-    await connection.query(
-      `INSERT INTO files (id, participant_id, activity_id, uploaded_by, file_name, file_path) VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        fileId,
-        null,
-        activityId,
-        staffUserId,
-        displayFileName,
-        databaseFilePath,
-      ],
-    );
-
-    connection.release();
-
-    console.log("[BATCH] ✓ SUCCESS: Attendance submission complete");
-    res.status(201).json({
-      message: "Attendance records saved successfully",
-      count: records.length,
-      file_id: fileId,
-      file_name: displayFileName,
-      file_path: databaseFilePath,
-    });
   } catch (error) {
     console.error("[BATCH] ✗ ERROR:", error.message);
     res.status(500).json({
       error: error.message,
       details: "Failed to save attendance and generate CSV",
     });
+  } finally {
+    activeBatchSubmissions.delete(submissionKey);
   }
 });
 
@@ -782,6 +813,8 @@ app.get("/api/files", async (req, res) => {
 
     connection.release();
 
+    // Deduplicate records by file_path to avoid showing multiple entries
+    // for essentially the same generated file (sometimes inserted repeatedly).
     console.log(`[GET /api/files] ✓ Success: Found ${rows?.length || 0} files`);
     if (rows && rows.length > 0) {
       console.log(
@@ -792,7 +825,29 @@ app.get("/api/files", async (req, res) => {
       console.log("[GET /api/files] No files found in database");
     }
 
-    res.json(rows || []);
+    try {
+      // Group by activity + file name and keep the most recent entry for each file
+      const grouped = new Map();
+      for (const r of rows || []) {
+        const key = `${r.activity_id || ""}::${r.file_name || r.file_path || ""}`;
+        const existing = grouped.get(key);
+        if (!existing) {
+          grouped.set(key, r);
+        } else {
+          const a = String(r.upload_date || "");
+          const b = String(existing.upload_date || "");
+          if (a > b) grouped.set(key, r);
+        }
+      }
+      const deduped = Array.from(grouped.values());
+      res.json(deduped);
+    } catch (err) {
+      console.error(
+        "[GET /api/files] Deduplication error:",
+        err && err.message,
+      );
+      res.json(rows || []);
+    }
   } catch (error) {
     console.error("[GET /api/files] ✗ Error:", error.message);
     res

@@ -781,6 +781,7 @@
 
         if (username === "staff" && password === "password") {
           localStorage.setItem("loggedIn", "true");
+          localStorage.setItem("username", "Staff User");
           window.location.href = "dashboard.html";
         } else {
           errorBox.classList.remove("hidden");

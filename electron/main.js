@@ -117,6 +117,10 @@ async function createWindow() {
     },
   });
 
+  mainWindow.webContents.on("did-finish-load", () => {
+    mainWindow.webContents.setZoomFactor(0.9);
+  });
+
   const backendReady = await waitForBackend();
   if (!backendReady) {
     dialog.showErrorBox(
