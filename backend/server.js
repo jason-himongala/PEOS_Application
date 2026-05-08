@@ -13,6 +13,14 @@ const app = express();
 // Backend should run on a dedicated API port (3001) when static frontend uses 3000
 const PORT = process.env.PORT || 3002;
 
+process.on("uncaughtException", (error) => {
+  console.error("[FATAL] Uncaught exception in backend:", error);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[FATAL] Unhandled promise rejection in backend:", reason);
+});
+
 function isAllowedOrigin(origin) {
   if (!origin) return true;
 
@@ -77,7 +85,7 @@ app.use(
   }),
 );
 app.options("*", cors());
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, "../public")));
@@ -635,41 +643,6 @@ app.post("/api/attendance/batch/:activity_id", async (req, res) => {
         insertedCount,
       );
 
-      // Generate actual CSV file
-      console.log("[BATCH] Generating CSV file from records");
-      const csvContent = generateAttendanceCSV(activityName, validRecords);
-      const now = new Date();
-      const timestamp = now.getTime();
-      const csvFileName = `attendance_${activityId}_${timestamp}.csv`;
-      const csvFilePath = path.join(uploadsDir, csvFileName);
-
-      fs.writeFileSync(csvFilePath, csvContent, "utf-8");
-      console.log("[BATCH] CSV file created:", csvFilePath);
-
-      // Insert database record pointing to the actual CSV file.
-      const fileId = uuidv4();
-      const displayFileName = `Attendance_${activityName}_${now
-        .toISOString()
-        .slice(0, 10)}.csv`;
-      const databaseFilePath = `/uploads/${csvFileName}`;
-
-      console.log("[BATCH] Inserting file record:", {
-        fileName: displayFileName,
-        filePath: databaseFilePath,
-      });
-
-      await connection.query(
-        `INSERT INTO files (id, participant_id, activity_id, uploaded_by, file_name, file_path) VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          fileId,
-          null,
-          activityId,
-          staffUserId,
-          displayFileName,
-          databaseFilePath,
-        ],
-      );
-
       await connection.query("COMMIT");
       transactionStarted = false;
       connection.release();
@@ -678,9 +651,6 @@ app.post("/api/attendance/batch/:activity_id", async (req, res) => {
       res.status(201).json({
         message: "Attendance records saved successfully",
         count: insertedCount,
-        file_id: fileId,
-        file_name: displayFileName,
-        file_path: databaseFilePath,
       });
     } catch (error) {
       if (transactionStarted) {
@@ -1001,7 +971,7 @@ app.use(
 // START SERVER
 // ============================================
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`\n✓ PEOS Backend Server running on http://localhost:${PORT}`);
   console.log(`✓ Database: SQLite (embedded file)`);
   console.log(`✓ Endpoints ready:\n`);
@@ -1010,4 +980,8 @@ app.listen(PORT, () => {
   console.log("  GET  /api/attendance/:id     - Get attendance records");
   console.log("  POST /api/attendance/batch   - Save batch attendance");
   console.log("  GET  /api/health             - Health check\n");
+});
+
+server.on("error", (error) => {
+  console.error("[FATAL] Backend server error:", error);
 });

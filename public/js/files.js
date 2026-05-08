@@ -356,6 +356,13 @@ function downloadFileCsv(filePath) {
 // ─── Event Listeners ──────────────────────────────────────────────────────────
 
 function setupEventListeners() {
+  if (window.__filesPageListenersAttached) {
+    console.log("[LISTENERS] Files page listeners already attached, skipping");
+    return;
+  }
+
+  window.__filesPageListenersAttached = true;
+
   const uploadBtn = document.getElementById("uploadFileBtn");
   const refreshBtn = document.getElementById("refreshFileListBtn");
   const exportBtn = document.getElementById("exportAllAttendanceCsv");
