@@ -34,68 +34,54 @@ function renderSubmittedList() {
     }
     return;
   }
+}
 
-  list.innerHTML = items
-    .map(
-      (it) => `
-      <tr data-activity-id="${it.activity_id}">
-        <td class="px-4 py-3"><p class="font-semibold text-gray-800">${it.name || "Untitled Activity"}</p></td>
-        <td class="px-4 py-3 text-gray-600">${it.venue || "—"} · ${it.date || "—"}</td>
-        <td class="px-4 py-3 text-gray-600">${it.record_count}</td>
-        <td class="px-4 py-3 text-gray-500">${it.last_saved ? new Date(it.last_saved).toLocaleString() : "—"}</td>
-        <td class="px-4 py-3 text-right space-x-2">
-          <button data-activity-id="${it.activity_id}" data-action="view" class="action-file inline-flex items-center rounded bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-700">View</button>
-          <button data-activity-id="${it.activity_id}" data-action="edit" class="action-file inline-flex items-center rounded bg-yellow-500 px-3 py-1 text-xs font-semibold text-white hover:bg-yellow-600">Edit</button>
-          <button data-activity-id="${it.activity_id}" data-action="print" class="action-file inline-flex items-center rounded bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700">Print</button>
-          <button data-activity-id="${it.activity_id}" data-action="download" class="action-file inline-flex items-center rounded bg-purple-600 px-3 py-1 text-xs font-semibold text-white hover:bg-purple-700">PDF</button>
-          <button data-activity-id="${it.activity_id}" data-action="csv" class="action-file inline-flex items-center rounded bg-green-600 px-3 py-1 text-xs font-semibold text-white hover:bg-green-700">CSV</button>
-        </td>
-      </tr>`,
-    )
-    .join("");
+function setupSubmittedListListener() {
+  const list = document.getElementById("submittedAttendanceList");
+  if (!list || window.__participantSubmittedListListenerAttached) return;
 
-  list.querySelectorAll(".action-file").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const activityId = btn.getAttribute("data-activity-id");
-      const action = btn.getAttribute("data-action");
-      const optionValue = `activity_${activityId}`;
-      const select = document.getElementById("attendanceEventFilter");
-      if (select) {
-        select.value = optionValue;
-      }
-      currentSelectedOption = optionValue;
+  window.__participantSubmittedListListenerAttached = true;
+  list.addEventListener("click", async (event) => {
+    const btn = event.target.closest(".action-file");
+    if (!btn || !list.contains(btn)) return;
 
-      if (action === "csv") {
-        await exportActivityAttendanceCsv(activityId);
+    const activityId = btn.getAttribute("data-activity-id");
+    const action = btn.getAttribute("data-action");
+    const optionValue = `activity_${activityId}`;
+    const select = document.getElementById("attendanceEventFilter");
+    if (select) {
+      select.value = optionValue;
+    }
+    currentSelectedOption = optionValue;
+
+    if (action === "csv") {
+      await exportActivityAttendanceCsv(activityId);
+      return;
+    }
+
+    if (!select) {
+      alert(
+        "Please open the Participant page to view or edit attendance records.",
+      );
+      return;
+    }
+
+    if (action === "view") {
+      await renderAttendanceSheet(optionValue, true);
+    } else if (action === "edit") {
+      await renderAttendanceSheet(optionValue, false);
+    } else if (action === "print") {
+      const printWindow = window.open("", "", "height=600,width=800");
+      if (!printWindow) {
+        alert("Print preview was blocked. Please allow pop-ups and try again.");
         return;
       }
-
-      if (!select) {
-        alert(
-          "Please open the Participant page to view or edit attendance records.",
-        );
-        return;
-      }
-
-      if (action === "view") {
-        await renderAttendanceSheet(optionValue, true);
-      } else if (action === "edit") {
-        await renderAttendanceSheet(optionValue, false);
-      } else if (action === "print") {
-        const printWindow = window.open("", "", "height=600,width=800");
-        if (!printWindow) {
-          alert(
-            "Print preview was blocked. Please allow pop-ups and try again.",
-          );
-          return;
-        }
-        await renderAttendanceSheet(optionValue, true);
-        await printAttendanceSheet(printWindow);
-      } else if (action === "download") {
-        await renderAttendanceSheet(optionValue, true);
-        downloadAttendanceSheet();
-      }
-    });
+      await renderAttendanceSheet(optionValue, true);
+      await printAttendanceSheet(printWindow);
+    } else if (action === "download") {
+      await renderAttendanceSheet(optionValue, true);
+      downloadAttendanceSheet();
+    }
   });
 }
 
@@ -704,7 +690,9 @@ async function downloadAttendanceSheet() {
 
       // Calculate actual column widths based on proportions
       const totalProportion = colWidths.reduce((a, b) => a + b, 0);
-      const actualColWidths = colWidths.map(w => (w / totalProportion) * tableWidth);
+      const actualColWidths = colWidths.map(
+        (w) => (w / totalProportion) * tableWidth,
+      );
 
       let yPos = startY;
       const { footerTop } = getFooterLayout();
@@ -860,7 +848,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   }
 
   if (submittedList) {
-    renderSubmittedList();
+    setupSubmittedListListener();
   }
 
   if (attendanceFilter && attendanceSheetContainer) {

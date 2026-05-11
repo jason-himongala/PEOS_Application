@@ -208,11 +208,7 @@ function renderFilesList() {
     })
     .join("");
 
-  // Attach event listeners to action buttons
-  console.log("[RENDER] Attaching event listeners to action buttons...");
-  container.querySelectorAll(".action-btn").forEach((btn) => {
-    btn.addEventListener("click", handleFileAction);
-  });
+  // The click handler is attached once via event delegation in setupEventListeners().
 
   console.log(`[RENDER] ✓ Table rendered with ${filesList.length} rows\n`);
 }
@@ -362,6 +358,13 @@ function setupEventListeners() {
   }
 
   window.__filesPageListenersAttached = true;
+
+  const container = document.getElementById("submittedAttendanceList");
+  if (container && !window.__filesTableListenerAttached) {
+    window.__filesTableListenerAttached = true;
+    container.addEventListener("click", handleFileAction);
+    console.log("[LISTENERS] Files table click delegation configured");
+  }
 
   const uploadBtn = document.getElementById("uploadFileBtn");
   const refreshBtn = document.getElementById("refreshFileListBtn");

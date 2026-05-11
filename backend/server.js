@@ -29,9 +29,8 @@ function isAllowedOrigin(origin) {
     const host = parsed.hostname;
     const port = parsed.port;
 
-    if (!port || (port !== "3000" && port !== "3002")) {
-      return false;
-    }
+    // Do not enforce a specific origin port here. Accept requests
+    // from allowed hosts regardless of port (helps LAN clients).
 
     if (host === "localhost" || host === "127.0.0.1") {
       return true;
@@ -586,14 +585,24 @@ app.post("/api/attendance/batch/:activity_id", async (req, res) => {
         .map(([, r]) => r)
         .filter((r) => {
           const name = (r.name || "").trim();
+          const contact = (r.contact || "").trim();
+          const sex = (r.sex || "").trim();
+          const office = (r.office || "").trim();
+          const position = (r.position || "").trim();
+          const signature = (r.signature || "").trim();
 
-          const hasParticipantName = name !== "";
-          if (!hasParticipantName) {
+          // Accept a row if any meaningful field is present. Previously this
+          // required a non-empty name which caused updates that only changed
+          // the contact number to be discarded.
+          const hasData = Boolean(
+            name || contact || sex || office || position || signature,
+          );
+          if (!hasData) {
             console.log(
-              `[BATCH] Filtering out row ${r.row_number} because name is empty`,
+              `[BATCH] Filtering out row ${r.row_number} because all fields are empty`,
             );
           }
-          return hasParticipantName;
+          return hasData;
         });
 
       console.log(
@@ -967,12 +976,22 @@ app.use(
   }),
 );
 
+// Generic error handler to avoid unhandled errors crashing the process
+app.use((err, req, res, next) => {
+  console.error(
+    "[ERROR] Express error:",
+    (err && (err.stack || err.message)) || err,
+  );
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: "Internal server error" });
+});
+
 // ============================================
 // START SERVER
 // ============================================
 
-const server = app.listen(PORT, () => {
-  console.log(`\n✓ PEOS Backend Server running on http://localhost:${PORT}`);
+const server = app.listen(PORT, "0.0.0.0", () => {
+  console.log(`\n✓ PEOS Backend Server running on http://0.0.0.0:${PORT}`);
   console.log(`✓ Database: SQLite (embedded file)`);
   console.log(`✓ Endpoints ready:\n`);
   console.log("  GET  /api/activities         - Get all activities");
@@ -985,3 +1004,13 @@ const server = app.listen(PORT, () => {
 server.on("error", (error) => {
   console.error("[FATAL] Backend server error:", error);
 });
+
+// Tune server timeouts to be more tolerant for LAN connections
+try {
+  // Some Node versions expose keepAliveTimeout/headersTimeout on the server
+  server.keepAliveTimeout = 120000; // 2 minutes
+  server.headersTimeout = 240000; // 4 minutes
+  console.log("✓ Server timeouts set: keepAlive=120s, headers=240s");
+} catch (e) {
+  console.warn("Could not set server timeouts:", e && e.message);
+}

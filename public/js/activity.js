@@ -41,17 +41,25 @@ function renderActivities(filter = "") {
     `,
     )
     .join("");
+}
 
-  list.querySelectorAll("button[data-id]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const id = btn.getAttribute("data-id");
-      await deleteActivity(id);
-      await refreshActivities();
-    });
+function setupActivityListListener() {
+  const list = document.getElementById("activityList");
+  if (!list || window.__activityListListenerAttached) return;
+
+  window.__activityListListenerAttached = true;
+  list.addEventListener("click", async (event) => {
+    const btn = event.target.closest("button[data-id]");
+    if (!btn || !list.contains(btn)) return;
+
+    const id = btn.getAttribute("data-id");
+    await deleteActivity(id);
+    await refreshActivities();
   });
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  setupActivityListListener();
   await refreshActivities();
 
   document.getElementById("activitySearch").addEventListener("input", (e) => {

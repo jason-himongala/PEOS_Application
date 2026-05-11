@@ -1,4 +1,6 @@
 let basePeos = 0;
+let genderChartInstance = null;
+let peosChartInstance = null;
 
 async function loadDashboardData() {
   try {
@@ -18,7 +20,10 @@ async function loadDashboardData() {
     document.getElementById("totalMale").textContent = totalMale;
 
     const genderCtx = document.getElementById("genderChart").getContext("2d");
-    new Chart(genderCtx, {
+    if (genderChartInstance) {
+      genderChartInstance.destroy();
+    }
+    genderChartInstance = new Chart(genderCtx, {
       type: "pie",
       data: {
         labels: ["Male", "Female"],
@@ -37,7 +42,10 @@ async function loadDashboardData() {
     });
 
     const peosCtx = document.getElementById("peosChart").getContext("2d");
-    new Chart(peosCtx, {
+    if (peosChartInstance) {
+      peosChartInstance.destroy();
+    }
+    peosChartInstance = new Chart(peosCtx, {
       type: "bar",
       data: {
         labels: ["From Data", "Saved"],
